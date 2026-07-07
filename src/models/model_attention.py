@@ -143,7 +143,7 @@ class Decoder(torch.nn.Module):
                     real_fve = targets[:, i : i + 1]
                 else:
                     median_idx = 2
-                    real_fve = prediction[:, median_idx : median_idx + 1].detach() # TODO try  then add all quantils
+                    real_fve = prediction[:, median_idx : median_idx + 1].detach()
                   
                 meteo = encoded_future[:, i + 1, :] 
                 input = torch.cat([real_fve, meteo], dim=-1)

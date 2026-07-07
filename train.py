@@ -8,10 +8,13 @@ from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
 from src.models import model_attention
 from src.preprocessing import Preprocessor
+from src.dataset import Dataset
+from src.losses import MultiQuantileLoss
+from src.engine import train, evaluate
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--seed", default=42, type=int, help="random seed for reproducibility")
-parser.add_argument("--exp_name", default="probability_preds", type=str)
+parser.add_argument("--seed", default=587, type=int, help="random seed for reproducibility")
+parser.add_argument("--exp_name", default="probability_preds_3", type=str)
 parser.add_argument("--save_dir", default="checkpoints", type=str)
 
 parser.add_argument("--dataset_file", default="fve_aba_dataset.csv", type=str, help="name of .csv file with dataset")
@@ -38,6 +41,7 @@ parser.add_argument("--horizon_cols", nargs="+",
 
 parser.add_argument("--batch_size", default=128, type=int, help="size of batch")
 parser.add_argument("--epochs", default=28, type=int, help="number of training epochs")
+parser.add_argument("--patience", default=5, type=int, help="how many epochs wait with no progress")
 parser.add_argument("--learning_rate", default=0.0006347523354663052, type=float, help="learning rate")
 parser.add_argument("--weight_decay", default=0.0008413987058716558, type=float, help="weight_decay")
 parser.add_argument("--eta_min", default=1e-6, type=float, help="Minimum learning rate for Cosine Annealing scheduler")
@@ -61,8 +65,6 @@ parser.add_argument("--decoder_dropout", default=0.07088107433700343, type=float
 
 parser.add_argument("--lookback", default=24, type=int, help="number of past rows (hours) to look back for historical weather and energy data")
 parser.add_argument("--horizon", default=24, type=int, help="number of future rows (hours) to look ahead for weather forecast and target predictions")
-
-# ---Model --- TODO try give the model instead of median all probabs
 parser.add_argument("--quantiles", default=[0.1, 0.3, 0.5, 0.7, 0.9], nargs='+', type=float, help="list of quantiles.")
 
 
@@ -118,8 +120,56 @@ def main(args: argparse.Namespace) -> None:
     train_df, val_df, test_df = load_dataset(args.dataset_file, train_ratio=args.train_ratio, val_ratio=args.val_ratio)
     train_df, val_df, test_df, preprocessor = prepare_and_scale_data(train_df, val_df, test_df, args)
 
+    train_loader = torch.utils.data.DataLoader(Dataset(data=train_df, lookback=args.lookback, horizon=args.horizon, lookback_cols=args.lookback_cols, horizon_cols=args.horizon_cols, target_col=args.target_col), batch_size=args.batch_size, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(Dataset(data=val_df, lookback=args.lookback, horizon=args.horizon, lookback_cols=args.lookback_cols, horizon_cols=args.horizon_cols, target_col=args.target_col), batch_size=args.batch_size, shuffle=False)
+    test_loader = torch.utils.data.DataLoader(Dataset(data=test_df, lookback=args.lookback, horizon=args.horizon, lookback_cols=args.lookback_cols, horizon_cols=args.horizon_cols, target_col=args.target_col), batch_size=args.batch_size, shuffle=False)
+    
     model = model_attention.Model(args=args).to(device)
-    pass
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=args.epochs, eta_min=args.eta_min)
+    criterion = MultiQuantileLoss(quantiles=args.quantiles)
+    train(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            criterion=criterion,
+            optimizer=optimizer,
+            scheduler=scheduler,  
+            preprocessor=preprocessor,
+            writer=writer,
+            device=device,
+            args=args
+        )
+    
+    print("\n--- STARTING TESTING ON UNSEEN DATA ---")
+    
+    best_model_path = os.path.join(args.save_dir, f"best_model_{args.exp_name}.pth")
+    if os.path.exists(best_model_path):
+        model.load_state_dict(torch.load(best_model_path, map_location=device))
+        print(f"Successfully loaded the best model from: {best_model_path}")
+    else:
+        print("Warning: Best model not found. Testing with current (latest) weights.")
+
+    test_loss, test_metrics = evaluate(
+        model=model, 
+        dataloader=test_loader, 
+        criterion=criterion, 
+        preprocessor=preprocessor, 
+        quantiles=args.quantiles, 
+        device=device
+    )
+    
+    print(f"\nResults on the test suite:")
+    print(f"Test Loss: {test_loss:.4f}")
+    writer.add_scalar("Loss/Test", test_loss, 0)
+    
+    for metric_name, value in test_metrics.items():
+        print(f"Test {metric_name.upper()}: {value:.4f}")
+        writer.add_scalar(f"Test_Metrics/{metric_name}", value, 0)
+
+    writer.close()
+    print("\nExperiment completely completed.")
 
 if __name__ == "__main__":
     args = parser.parse_args([] if "__file__" not in globals() else None)

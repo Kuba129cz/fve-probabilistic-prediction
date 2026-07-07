@@ -3,7 +3,7 @@ import joblib
 import os
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 
 class Preprocessor:
     """Handles feature and target scaling. 
@@ -19,8 +19,8 @@ class Preprocessor:
             col for col in self.feature_cols if not (col.startswith("sin_") or col.startswith("cos_"))
         ]
         
-        self.feature_scaler = StandardScaler()
-        self.target_scaler = StandardScaler()
+        self.feature_scaler = MinMaxScaler()
+        self.target_scaler = MinMaxScaler()
 
     def fit(self, train_df: pd.DataFrame) -> None:
         """Fits both scalers on the training dataset."""
